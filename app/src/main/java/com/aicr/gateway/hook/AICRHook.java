@@ -13,187 +13,102 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * AICRHook is responsible for hooking into the AICR core service classes
- * and extracting sub-service plugin instances via reflection.
- *
- * After MainHook captures the IBinder from AiCrCoreService.onBind(), this
- * class performs deeper introspection to locate VisionPlugIn and SegmentPlugin
- * instances that are held by the core service, enabling the gateway to
- * interact with them directly when needed.
+ * AICRHook performs deeper introspection on the AICR core service
+ * to locate sub-service plugin instances (Vision, NER, Segment)
+ * after MainHook has captured the core service binder or instance.
  */
 public class AICRHook {
 
     private static final String TAG = "AICR_Gateway";
 
-    // Known class names within the AICR application
-    private static final String CORE_SERVICE_CLASS = "com.xiaomi.aicr.AiCrCoreService";
-    private static final String VISION_PLUGIN_CLASS = "com.xiaomi.aicr.plugin.VisionPlugIn";
-    private static final String SEGMENT_PLUGIN_CLASS = "com.xiaomi.aicr.plugin.SegmentPlugin";
+    // Corrected class path based on dumpsys package output
+    private static final String CORE_SERVICE_CLASS = "com.xiaomi.aicr.access.AiCrCoreService";
 
     /**
-     * Hooks additional sub-service methods after the core binder has been
-     * captured by MainHook. This method is called once per binder capture
-     * and sets up interception of VisionPlugIn and SegmentPlugin instances.
+     * Called after MainHook captures the IBinder from AiCrCoreService.onBind().
+     * Attempts to hook sub-service plugin initialization methods.
      *
      * @param binder      the IBinder returned by AiCrCoreService.onBind()
      * @param classLoader the class loader of the AICR application
      */
     public static void hookSubServices(IBinder binder, ClassLoader classLoader) {
-        XposedBridge.log(TAG + ": hookSubServices() invoked");
+        XposedBridge.log(TAG + ": hookSubServices() invoked, binder=" + binder.getClass().getName());
 
+        // Log the binder's interface descriptor
         try {
-            // Attempt to resolve plugin instances from the service binder
-            hookVisionPlugin(classLoader);
-            hookSegmentPlugin(classLoader);
+            Method getDescriptor = binder.getClass().getMethod("getInterfaceDescriptor");
+            String descriptor = (String) getDescriptor.invoke(binder);
+            XposedBridge.log(TAG + ": Binder interface descriptor: " + descriptor);
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": Error in hookSubServices: " + t.getMessage());
+            XposedBridge.log(TAG + ": Could not get interface descriptor: " + t.getMessage());
         }
+
+        // Discover AIDL stubs by scanning the classloader
+        discoverServiceInterfaces(classLoader);
+
+        // Scan for plugin classes
+        scanPluginClasses(classLoader);
     }
 
     /**
-     * Uses reflection to locate and hook the VisionPlugIn instance within
-     * the AICR core service. The VisionPlugIn provides vision-related
-     * capabilities such as object detection, OCR, and image classification.
-     *
-     * @param classLoader the class loader of the AICR application
+     * Scans the classloader for AIDL Stub classes that might be sub-service interfaces.
+     * Looks for classes matching known patterns (IVisionService, INerService, etc.).
      */
-    private static void hookVisionPlugin(ClassLoader classLoader) {
-        try {
-            Class<?> visionPluginClass = Class.forName(VISION_PLUGIN_CLASS, false, classLoader);
-            XposedBridge.log(TAG + ": Resolved VisionPlugIn class: " + visionPluginClass.getName());
+    private static void discoverServiceInterfaces(ClassLoader classLoader) {
+        // Try common AIDL interface names
+        String[] possibleNames = {
+            "com.xiaomi.aicr.service.IVisionService$Stub",
+            "com.xiaomi.aicr.service.INerService$Stub",
+            "com.xiaomi.aicr.service.IImageSegmentService$Stub",
+            "com.xiaomi.aicr.IVisionService$Stub",
+            "com.xiaomi.aicr.INerService$Stub",
+            "com.xiaomi.aicr.IImageSegmentService$Stub",
+            "com.xiaomi.aicr.access.IVisionService$Stub",
+            "com.xiaomi.aicr.access.INerService$Stub",
+            "com.xiaomi.aicr.access.IImageSegmentService$Stub",
+            "com.xiaomi.aicr.service.ICoreService$Stub",
+            "com.xiaomi.aicr.ICoreService$Stub",
+            "com.xiaomi.aicr.access.ICoreService$Stub",
+            "com.xiaomi.aicr.service.IAiCrService$Stub",
+            "com.xiaomi.aicr.IAiCrService$Stub",
+            "com.xiaomi.aicr.access.IAiCrService$Stub",
+        };
 
-            // Hook the VisionPlugIn's initialize method if it exists
+        for (String name : possibleNames) {
             try {
-                XposedHelpers.findAndHookMethod(
-                        visionPluginClass,
-                        "initialize",
-                        new XC_MethodHook() {
-                            @Override
-                            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                                if (param.getThrowable() != null) {
-                                    XposedBridge.log(TAG + ": VisionPlugIn.initialize() failed: "
-                                            + param.getThrowable().getMessage());
-                                    return;
-                                }
-
-                                Object pluginInstance = param.thisObject;
-                                XposedBridge.log(TAG + ": VisionPlugIn initialized: "
-                                        + pluginInstance.getClass().getName());
-
-                                // Store the plugin reference in ServiceProxy for later use
-                                storePluginReference("visionPlugin", pluginInstance);
-                            }
-                        }
-                );
-                XposedBridge.log(TAG + ": Hooked VisionPlugIn.initialize()");
-            } catch (NoSuchMethodError e) {
-                XposedBridge.log(TAG + ": VisionPlugIn.initialize() not found, "
-                        + "attempting field extraction instead");
-                extractPluginFromFields(visionPluginClass, classLoader);
+                Class<?> clazz = Class.forName(name, false, classLoader);
+                XposedBridge.log(TAG + ": Found AIDL stub: " + name);
+            } catch (ClassNotFoundException ignored) {
+                // Expected - most won't exist
             }
-
-        } catch (ClassNotFoundException e) {
-            XposedBridge.log(TAG + ": VisionPlugIn class not found: " + e.getMessage());
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + ": Error hooking VisionPlugIn: " + t.getMessage());
         }
     }
 
     /**
-     * Uses reflection to locate and hook the SegmentPlugin instance within
-     * the AICR core service. The SegmentPlugin provides image segmentation
-     * capabilities such as background removal and subject isolation.
-     *
-     * @param classLoader the class loader of the AICR application
+     * Scans the classloader for known plugin class patterns.
      */
-    private static void hookSegmentPlugin(ClassLoader classLoader) {
-        try {
-            Class<?> segmentPluginClass = Class.forName(SEGMENT_PLUGIN_CLASS, false, classLoader);
-            XposedBridge.log(TAG + ": Resolved SegmentPlugin class: " + segmentPluginClass.getName());
+    private static void scanPluginClasses(ClassLoader classLoader) {
+        String[] possiblePlugins = {
+            "com.xiaomi.aicr.plugin.VisionPlugIn",
+            "com.xiaomi.aicr.plugin.VisionPlugin",
+            "com.xiaomi.aicr.plugin.SegmentPlugin",
+            "com.xiaomi.aicr.plugin.SegmentPlugIn",
+            "com.xiaomi.aicr.plugin.NerPlugin",
+            "com.xiaomi.aicr.plugin.NerPlugIn",
+            "com.xiaomi.aicr.plugin.OCRPlugin",
+            "com.xiaomi.aicr.plugin.OCRPlugIn",
+            "com.xiaomi.aicr.access.VisionPlugIn",
+            "com.xiaomi.aicr.access.SegmentPlugin",
+            "com.xiaomi.aicr.access.NerPlugin",
+        };
 
-            // Hook the SegmentPlugin's initialize method if it exists
+        for (String name : possiblePlugins) {
             try {
-                XposedHelpers.findAndHookMethod(
-                        segmentPluginClass,
-                        "initialize",
-                        new XC_MethodHook() {
-                            @Override
-                            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                                if (param.getThrowable() != null) {
-                                    XposedBridge.log(TAG + ": SegmentPlugin.initialize() failed: "
-                                            + param.getThrowable().getMessage());
-                                    return;
-                                }
-
-                                Object pluginInstance = param.thisObject;
-                                XposedBridge.log(TAG + ": SegmentPlugin initialized: "
-                                        + pluginInstance.getClass().getName());
-
-                                // Store the plugin reference for later use
-                                storePluginReference("segmentPlugin", pluginInstance);
-                            }
-                        }
-                );
-                XposedBridge.log(TAG + ": Hooked SegmentPlugin.initialize()");
-            } catch (NoSuchMethodError e) {
-                XposedBridge.log(TAG + ": SegmentPlugin.initialize() not found, "
-                        + "attempting field extraction instead");
-                extractPluginFromFields(segmentPluginClass, classLoader);
+                Class<?> clazz = Class.forName(name, false, classLoader);
+                XposedBridge.log(TAG + ": Found plugin class: " + name);
+            } catch (ClassNotFoundException ignored) {
+                // Expected
             }
-
-        } catch (ClassNotFoundException e) {
-            XposedBridge.log(TAG + ": SegmentPlugin class not found: " + e.getMessage());
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + ": Error hooking SegmentPlugin: " + t.getMessage());
         }
-    }
-
-    /**
-     * Attempts to extract plugin instances by scanning the fields of the
-     * AiCrCoreService class for references to known plugin types.
-     * This is a fallback when the plugin classes do not expose a direct
-     * initialize() method that can be hooked.
-     *
-     * @param pluginClass the plugin class to search for in service fields
-     * @param classLoader the class loader of the AICR application
-     */
-    private static void extractPluginFromFields(Class<?> pluginClass, ClassLoader classLoader) {
-        try {
-            Class<?> coreServiceClass = Class.forName(CORE_SERVICE_CLASS, false, classLoader);
-
-            for (Field field : coreServiceClass.getDeclaredFields()) {
-                if (pluginClass.isAssignableFrom(field.getType())) {
-                    field.setAccessible(true);
-                    XposedBridge.log(TAG + ": Found plugin field: " + field.getName()
-                            + " of type " + field.getType().getName());
-
-                    // We cannot access a live instance without an object reference,
-                    // but we log the discovery for the hook that will capture the instance
-                    // when onBind() is intercepted.
-                    XposedBridge.log(TAG + ": Plugin field " + field.getName()
-                            + " will be resolved when service instance is available");
-                }
-            }
-        } catch (ClassNotFoundException e) {
-            XposedBridge.log(TAG + ": Core service class not found: " + e.getMessage());
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + ": Error scanning fields: " + t.getMessage());
-        }
-    }
-
-    /**
-     * Stores a plugin reference by name for later retrieval.
-     * This is used to cache plugin instances after they have been
-     * initialized or extracted from the service.
-     *
-     * @param name     a human-readable name for the plugin
-     * @param instance the plugin object instance
-     */
-    private static void storePluginReference(String name, Object instance) {
-        // Store in a static map or delegate to ServiceProxy as needed.
-        // For now, we log the capture; integration with ServiceProxy
-        // can be extended when the full plugin interface is mapped.
-        XposedBridge.log(TAG + ": Stored plugin reference [" + name + "]: "
-                + (instance != null ? instance.getClass().getName() : "null"));
     }
 }
