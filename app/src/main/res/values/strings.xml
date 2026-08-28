@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AICR API Gateway</string>
+    <string name="service_enabled">启用API服务</string>
+    <string name="port_label">端口号</string>
+    <string name="auth_enabled">启用API Key认证</string>
+    <string name="api_key_label">API Key</string>
+    <string name="log_enabled">启用日志</string>
+    <string name="save_config">保存配置</string>
+    <string name="restart_service">重启服务</string>
+    <string name="service_status">服务状态</string>
+    <string name="status_running">运行中</string>
+    <string name="status_stopped">已停止</string>
+    <string name="ip_address">IP地址</string>
+</resources>

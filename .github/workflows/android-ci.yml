@@ -1,0 +1,121 @@
+name: Android CI/CD
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+
+    - name: Build Debug APK
+      run: ./gradlew assembleDebug
+
+    - name: Build Release APK
+      run: ./gradlew assembleRelease
+
+    - name: Upload Debug APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-apk
+        path: app/build/outputs/apk/debug/*.apk
+
+    - name: Upload Release APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-apk
+        path: app/build/outputs/apk/release/*.apk
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+
+    - name: Build Release APK
+      run: ./gradlew assembleRelease
+
+    - name: Get version from tag
+      id: get_version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: "AICR API Gateway ${{ steps.get_version.outputs.VERSION }}"
+        body: |
+          ## AICR API Gateway ${{ steps.get_version.outputs.VERSION }}
+
+          ### Features
+          - HTTP REST API for AICR AI capabilities
+          - OCR text recognition
+          - NER entity extraction
+          - Image segmentation
+          - Optional API Key authentication
+          - Configuration UI
+
+          ### Installation
+          1. Download the APK below
+          2. Install via LSPosed
+          3. Enable module in LSPosed (select "System Framework" and "com.xiaomi.aicr")
+          4. Reboot device
+          5. Open AICR API Gateway app to configure
+
+          ### Usage
+          ```bash
+          # OCR
+          curl -X POST http://<device-ip>:8080/api/v1/ocr -F "file=@image.png"
+
+          # NER
+          curl -X POST http://<device-ip>:8080/api/v1/ner -H "Content-Type: application/json" -d '{"text": "..."}'
+
+          # Image Segmentation
+          curl -X POST http://<device-ip>:8080/api/v1/segment -F "file=@photo.jpg" -F "type=person"
+
+          # Status
+          curl http://<device-ip>:8080/api/v1/status
+          ```
+        files: |
+          app/build/outputs/apk/release/*.apk
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
