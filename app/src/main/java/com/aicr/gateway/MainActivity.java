@@ -21,9 +21,6 @@ import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.Enumeration;
 
-/**
- * Main configuration activity
- */
 public class MainActivity extends Activity {
 
     private Switch switchService;
@@ -40,7 +37,6 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-
         initViews();
         loadConfig();
         updateStatus();
@@ -56,16 +52,8 @@ public class MainActivity extends Activity {
         btnRestart = findViewById(R.id.btn_restart);
         tvStatus = findViewById(R.id.tv_status);
         tvIpAddress = findViewById(R.id.tv_ip_address);
-
-        // Auth switch listener
-        switchAuth.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            editApiKey.setVisibility(isChecked ? View.VISIBLE : View.GONE);
-        });
-
-        // Save button
+        switchAuth.setOnCheckedChangeListener((buttonView, isChecked) -> { editApiKey.setVisibility(isChecked ? View.VISIBLE : View.GONE); });
         btnSave.setOnClickListener(v -> saveConfig());
-
-        // Restart button
         btnRestart.setOnClickListener(v -> restartService());
     }
 
@@ -76,30 +64,22 @@ public class MainActivity extends Activity {
         switchAuth.setChecked(config.isAuthEnabled());
         editApiKey.setText(config.getApiKey());
         switchLog.setChecked(config.isLogEnabled());
-
         editApiKey.setVisibility(config.isAuthEnabled() ? View.VISIBLE : View.GONE);
     }
 
     private void saveConfig() {
         try {
             int port = Integer.parseInt(editPort.getText().toString());
-            if (port < 1024 || port > 65535) {
-                Toast.makeText(this, "端口号必须在1024-65535之间", Toast.LENGTH_SHORT).show();
-                return;
-            }
-
+            if (port < 1024 || port > 65535) { Toast.makeText(this, "端口必须在1024-65535", Toast.LENGTH_SHORT).show(); return; }
             GatewayConfig config = new GatewayConfig(this);
             config.setEnabled(switchService.isChecked());
             config.setPort(port);
             config.setAuthEnabled(switchAuth.isChecked());
             config.setApiKey(editApiKey.getText().toString());
             config.setLogEnabled(switchLog.isChecked());
-
             Toast.makeText(this, "配置已保存", Toast.LENGTH_SHORT).show();
             updateStatus();
-        } catch (NumberFormatException e) {
-            Toast.makeText(this, "请输入有效的端口号", Toast.LENGTH_SHORT).show();
-        }
+        } catch (NumberFormatException e) { Toast.makeText(this, "请输入有效端口", Toast.LENGTH_SHORT).show(); }
     }
 
     private void restartService() {
@@ -110,9 +90,8 @@ public class MainActivity extends Activity {
 
     private void updateStatus() {
         boolean isRunning = HttpServerManager.getInstance().isRunning();
-        tvStatus.setText("服务状态: " + (isRunning ? "● 运行中" : "○ 已停止"));
+        tvStatus.setText("服务状态: " + (isRunning ? "运行中" : "已停止"));
         tvStatus.setTextColor(isRunning ? 0xFF4CAF50 : 0xFFF44336);
-
         String ip = getLocalIpAddress();
         GatewayConfig config = new GatewayConfig(this);
         tvIpAddress.setText("访问地址: http://" + ip + ":" + config.getPort());
@@ -120,41 +99,23 @@ public class MainActivity extends Activity {
 
     private String getLocalIpAddress() {
         try {
-            WifiManager wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-            WifiInfo wifiInfo = wifiManager.getConnectionInfo();
-            int ipInt = wifiInfo.getIpAddress();
-            if (ipInt != 0) {
-                return String.format("%d.%d.%d.%d",
-                    (ipInt & 0xff), (ipInt >> 8 & 0xff),
-                    (ipInt >> 16 & 0xff), (ipInt >> 24 & 0xff));
-            }
-        } catch (Exception e) {
-            LogUtil.e("Failed to get WiFi IP", e);
-        }
-
-        // Fallback to network interface
+            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            int ip = wm.getConnectionInfo().getIpAddress();
+            if (ip != 0) return String.format("%d.%d.%d.%d", ip & 0xff, (ip >> 8) & 0xff, (ip >> 16) & 0xff, (ip >> 24) & 0xff);
+        } catch (Exception e) { LogUtil.e("MainActivity", "Failed to get WiFi IP", e); }
         try {
             Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
             while (interfaces.hasMoreElements()) {
-                NetworkInterface ni = interfaces.nextElement();
-                Enumeration<InetAddress> addresses = ni.getInetAddresses();
-                while (addresses.hasMoreElements()) {
-                    InetAddress addr = addresses.nextElement();
-                    if (!addr.isLoopbackAddress() && addr instanceof Inet4Address) {
-                        return addr.getHostAddress();
-                    }
+                Enumeration<InetAddress> addrs = interfaces.nextElement().getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    InetAddress addr = addrs.nextElement();
+                    if (!addr.isLoopbackAddress() && addr instanceof Inet4Address) return addr.getHostAddress();
                 }
             }
-        } catch (Exception e) {
-            LogUtil.e("Failed to get network IP", e);
-        }
-
+        } catch (Exception e) { LogUtil.e("MainActivity", "Failed to get network IP", e); }
         return "0.0.0.0";
     }
 
     @Override
-    protected void onResume() {
-        super.onResume();
-        updateStatus();
-    }
+    protected void onResume() { super.onResume(); updateStatus(); }
 }
