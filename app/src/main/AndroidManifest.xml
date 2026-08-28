@@ -28,6 +28,20 @@
             </intent-filter>
         </activity>
 
+        <!-- LSPosed/Xposed Module Metadata -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="API Gateway for Xiaomi AICR - exposes OCR, NER, Segmentation as HTTP REST API" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="82" />
+        <meta-data
+            android:name="xposedscope"
+            android:resource="@array/xposedscope" />
+
     </application>
 
 </manifest>
