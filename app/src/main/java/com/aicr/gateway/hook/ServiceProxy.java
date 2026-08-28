@@ -6,32 +6,23 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import de.robv.android.xposed.XposedBridge;
 
+/**
+ * ServiceProxy communicates with AICR AI services via AIDL interfaces.
+ * 
+ * Actual AIDL methods (discovered via jadx decompilation):
+ * - IVisionService: setImage(Bitmap), doOCRDetect(int), doOCRRecognize(int)
+ * - INerService: extract(String) -> List<Entity>, cut(String) -> List<String>
+ * - IImageSegmentService: segment(Bitmap, VisionAttribute) -> SegmentResult
+ */
 public class ServiceProxy {
 
     private static final String TAG = "AICR_Gateway";
 
-    // Correct AIDL stub class names (discovered from AICR logs)
-    private static final String[] VISION_STUB_NAMES = {
-        "com.xiaomi.aicr.plugin.IVisionService$Stub",
-        "com.xiaomi.aicr.service.IVisionService$Stub",
-        "com.xiaomi.aicr.IVisionService$Stub",
-        "com.xiaomi.aicr.access.IVisionService$Stub",
-    };
-    private static final String[] NER_STUB_NAMES = {
-        "com.xiaomi.aicr.plugin.INerService$Stub",
-        "com.xiaomi.aicr.service.INerService$Stub",
-        "com.xiaomi.aicr.INerService$Stub",
-        "com.xiaomi.aicr.access.INerService$Stub",
-    };
-    private static final String[] SEGMENT_STUB_NAMES = {
-        "com.xiaomi.aicr.plugin.IImageSegmentService$Stub",
-        "com.xiaomi.aicr.service.IImageSegmentService$Stub",
-        "com.xiaomi.aicr.IImageSegmentService$Stub",
-        "com.xiaomi.aicr.access.IImageSegmentService$Stub",
-    };
+    private static final String VISION_STUB = "com.xiaomi.aicr.plugin.IVisionService$Stub";
+    private static final String NER_STUB = "com.xiaomi.aicr.plugin.INerService$Stub";
+    private static final String SEGMENT_STUB = "com.xiaomi.aicr.plugin.IImageSegmentService$Stub";
 
     private static volatile ServiceProxy instance;
     public static ServiceProxy getInstance() {
@@ -41,16 +32,10 @@ public class ServiceProxy {
     private ServiceProxy() {}
 
     private volatile IBinder coreServiceBinder;
-    private volatile Object coreServiceInstance;
     private volatile ClassLoader appClassLoader;
     private volatile Object visionService;
     private volatile Object nerService;
     private volatile Object segmentService;
-
-    // Direct engine references discovered from service fields
-    private volatile Object visionEngine;
-    private volatile Object nerEngine;
-    private volatile Object segmentEngine;
 
     public void setCoreServiceBinder(IBinder binder, ClassLoader classLoader) {
         this.coreServiceBinder = binder;
@@ -59,105 +44,41 @@ public class ServiceProxy {
         this.nerService = null;
         this.segmentService = null;
         XposedBridge.log(TAG + ": Core service binder set: " + (binder != null ? binder.getClass().getName() : "null"));
-        if (binder != null) discoverInterfaces(binder, classLoader);
+        if (binder != null) createAllProxies(binder, classLoader);
     }
 
     public void setCoreServiceInstance(Object service, ClassLoader classLoader) {
-        this.coreServiceInstance = service;
         if (this.appClassLoader == null) this.appClassLoader = classLoader;
-        XposedBridge.log(TAG + ": Core service instance set: " + (service != null ? service.getClass().getName() : "null"));
-        if (service != null) scanServiceFields(service);
+        XposedBridge.log(TAG + ": Core service instance: " + (service != null ? service.getClass().getName() : "null"));
     }
 
     public IBinder getCoreServiceBinder() { return coreServiceBinder; }
-    public boolean isConnected() { return coreServiceBinder != null || visionEngine != null || nerEngine != null || segmentEngine != null; }
+    public boolean isConnected() { return coreServiceBinder != null; }
+    public Object getVisionService() { return visionService; }
+    public Object getNerService() { return nerService; }
+    public Object getSegmentService() { return segmentService; }
+    public static void reset() { synchronized (ServiceProxy.class) { instance = null; } }
 
-    public static void reset() {
-        synchronized (ServiceProxy.class) { instance = null; }
+    private void createAllProxies(IBinder binder, ClassLoader cl) {
+        visionService = createProxy(VISION_STUB, binder, cl);
+        nerService = createProxy(NER_STUB, binder, cl);
+        segmentService = createProxy(SEGMENT_STUB, binder, cl);
+        XposedBridge.log(TAG + ": Proxies - vision=" + (visionService != null) 
+            + " ner=" + (nerService != null) + " segment=" + (segmentService != null));
     }
 
-    // ---- Interface Discovery ----
-
-    private void discoverInterfaces(IBinder binder, ClassLoader classLoader) {
+    private Object createProxy(String stubClassName, IBinder binder, ClassLoader cl) {
         try {
-            Method descMethod = IBinder.class.getMethod("getInterfaceDescriptor");
-            String descriptor = (String) descMethod.invoke(binder);
-            XposedBridge.log(TAG + ": Binder descriptor: " + descriptor);
+            Class<?> stubClass = Class.forName(stubClassName, false, cl);
+            Method asInterface = stubClass.getMethod("asInterface", IBinder.class);
+            Object proxy = asInterface.invoke(null, binder);
+            if (proxy != null) XposedBridge.log(TAG + ": Created proxy: " + stubClassName);
+            return proxy;
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": Cannot get descriptor: " + t.getMessage());
-        }
-        if (visionService == null) visionService = tryCreateProxy(VISION_STUB_NAMES, binder, classLoader);
-        if (nerService == null) nerService = tryCreateProxy(NER_STUB_NAMES, binder, classLoader);
-        if (segmentService == null) segmentService = tryCreateProxy(SEGMENT_STUB_NAMES, binder, classLoader);
-    }
-
-    private Object tryCreateProxy(String[] classNames, IBinder binder, ClassLoader classLoader) {
-        for (String name : classNames) {
-            try {
-                Class<?> stubClass = Class.forName(name, false, classLoader);
-                Method asInterface = stubClass.getMethod("asInterface", IBinder.class);
-                Object proxy = asInterface.invoke(null, binder);
-                if (proxy != null) {
-                    XposedBridge.log(TAG + ": Created proxy: " + name);
-                    return proxy;
-                }
-            } catch (ClassNotFoundException ignored) {
-            } catch (Throwable t) {
-                XposedBridge.log(TAG + ": Proxy error [" + name + "]: " + t.getMessage());
-            }
-        }
-        return null;
-    }
-
-    // ---- Service Field Scanning ----
-
-    private void scanServiceFields(Object service) {
-        XposedBridge.log(TAG + ": Scanning service for AI engines...");
-        Class<?> clazz = service.getClass();
-        while (clazz != null && clazz != Object.class) {
-            for (Field field : clazz.getDeclaredFields()) {
-                try {
-                    field.setAccessible(true);
-                    Object value = field.get(service);
-                    if (value == null) continue;
-                    String fn = field.getName();
-                    String tn = field.getType().getName();
-                    XposedBridge.log(TAG + ": Field [" + fn + "] type=" + tn);
-                    classifyEngine(fn, tn, value);
-                    if (value instanceof Map) {
-                        for (Object v : ((Map<?, ?>) value).values()) {
-                            if (v != null) classifyEngine(fn, v.getClass().getName(), v);
-                        }
-                    }
-                    if (value instanceof List) {
-                        for (Object v : (List<?>) value) {
-                            if (v != null) classifyEngine(fn, v.getClass().getName(), v);
-                        }
-                    }
-                } catch (Throwable ignored) {}
-            }
-            clazz = clazz.getSuperclass();
-        }
-        XposedBridge.log(TAG + ": Scan: vision=" + (visionEngine != null) + " ner=" + (nerEngine != null) + " segment=" + (segmentEngine != null));
-    }
-
-    private void classifyEngine(String fieldName, String typeName, Object value) {
-        String c = (fieldName + ":" + typeName).toLowerCase();
-        if (visionEngine == null && (c.contains("vision") || c.contains("ocr") || c.contains("recogni"))) {
-            visionEngine = value;
-            XposedBridge.log(TAG + ": Vision engine: [" + fieldName + "] " + typeName);
-        }
-        if (nerEngine == null && (c.contains("ner") || c.contains("nlp") || c.contains("entity") || c.contains("tokeni"))) {
-            nerEngine = value;
-            XposedBridge.log(TAG + ": NER engine: [" + fieldName + "] " + typeName);
-        }
-        if (segmentEngine == null && (c.contains("segment") || c.contains("seg_") || c.contains("matting"))) {
-            segmentEngine = value;
-            XposedBridge.log(TAG + ": Segment engine: [" + fieldName + "] " + typeName);
+            XposedBridge.log(TAG + ": Proxy failed [" + stubClassName + "]: " + t.getMessage());
+            return null;
         }
     }
-
-    // ---- Reflection Utilities ----
 
     private Method findMethod(Object obj, String methodName, Class<?>... paramTypes) {
         Class<?> clazz = obj.getClass();
@@ -168,251 +89,252 @@ public class ServiceProxy {
         return null;
     }
 
-    // ---- Public API Methods ----
-
+    // ==================== OCR ====================
+    
     public OCRResult performOCR(Bitmap bitmap) {
-        // Try AIDL proxy first
-        Object svc = getVisionService();
-        if (svc != null) {
-            try {
-                Method m = findMethod(svc, "ocr", Bitmap.class);
-                if (m == null) m = findMethod(svc, "performOCR", Bitmap.class);
-                if (m == null) m = findMethod(svc, "recognizeText", Bitmap.class);
-                if (m != null) {
-                    Object result = m.invoke(svc, bitmap);
-                    OCRResult r = convertOCRResult(result);
-                    if (r != null) return r;
-                }
-            } catch (Throwable t) { XposedBridge.log(TAG + ": AIDL OCR error: " + t.getMessage()); }
+        if (visionService == null) {
+            XposedBridge.log(TAG + ": OCR: visionService is null");
+            return null;
         }
-        // Fallback: direct engine
-        if (visionEngine != null) {
-            try {
-                Method m = findMethod(visionEngine, "ocr", Bitmap.class);
-                if (m == null) m = findMethod(visionEngine, "performOCR", Bitmap.class);
-                if (m == null) m = findMethod(visionEngine, "recognizeText", Bitmap.class);
-                if (m == null) m = findMethod(visionEngine, "doOCR", Bitmap.class);
-                if (m == null) m = findMethod(visionEngine, "process", Bitmap.class);
-                if (m != null) {
-                    Object result = m.invoke(visionEngine, bitmap);
-                    return convertOCRResult(result);
-                }
-            } catch (Throwable t) { XposedBridge.log(TAG + ": Direct OCR error: " + t.getMessage()); }
+        try {
+            // Step 1: setImage(Bitmap) -> int
+            Method setImage = findMethod(visionService, "setImage", Bitmap.class);
+            if (setImage == null) {
+                XposedBridge.log(TAG + ": OCR: setImage method not found");
+                return null;
+            }
+            int setResult = (int) setImage.invoke(visionService, bitmap);
+            XposedBridge.log(TAG + ": OCR: setImage returned " + setResult);
+
+            // Step 2: doOCRRecognize(int) -> OCRResult
+            Method doOCRRecognize = findMethod(visionService, "doOCRRecognize", int.class);
+            if (doOCRRecognize == null) {
+                XposedBridge.log(TAG + ": OCR: doOCRRecognize method not found");
+                return null;
+            }
+            Object ocrResult = doOCRRecognize.invoke(visionService, 0);
+            if (ocrResult == null) {
+                XposedBridge.log(TAG + ": OCR: doOCRRecognize returned null");
+                return null;
+            }
+
+            // Convert AICR OCRResult to our OCRResult
+            return convertAICROCRResult(ocrResult);
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": OCR error: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+            return null;
         }
-        return null;
     }
+
+    private OCRResult convertAICROCRResult(Object ocrResult) {
+        try {
+            OCRResult result = new OCRResult();
+            result.setStatusCode(0);
+
+            // Get total_text field
+            try {
+                Field totalTextField = ocrResult.getClass().getField("total_text");
+                String totalText = (String) totalTextField.get(ocrResult);
+                XposedBridge.log(TAG + ": OCR total_text: " + (totalText != null ? totalText.substring(0, Math.min(50, totalText.length())) : "null"));
+            } catch (Throwable ignored) {}
+
+            // Get paragraphs -> lines -> line_text
+            Method getParagraphs = findMethod(ocrResult, "getParagraphs");
+            if (getParagraphs == null) {
+                // Try field access
+                Field paragraphsField = ocrResult.getClass().getField("paragraphs");
+                paragraphsField.setAccessible(true);
+                Object paragraphs = paragraphsField.get(ocrResult);
+                if (paragraphs instanceof Object[]) {
+                    for (Object para : (Object[]) paragraphs) {
+                        extractLinesFromParagraph(para, result);
+                    }
+                }
+            } else {
+                Object paragraphs = getParagraphs.invoke(ocrResult);
+                if (paragraphs instanceof Object[]) {
+                    for (Object para : (Object[]) paragraphs) {
+                        extractLinesFromParagraph(para, result);
+                    }
+                }
+            }
+            return result;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": OCR convert error: " + t.getMessage());
+            return null;
+        }
+    }
+
+    private void extractLinesFromParagraph(Object para, OCRResult result) {
+        try {
+            Field linesField = para.getClass().getField("lines");
+            linesField.setAccessible(true);
+            Object lines = linesField.get(para);
+            if (lines instanceof Object[]) {
+                for (Object line : (Object[]) lines) {
+                    TextBlock block = new TextBlock();
+                    Field textField = line.getClass().getField("line_text");
+                    textField.setAccessible(true);
+                    block.setContent((String) textField.get(line));
+                    // Get location -> box
+                    try {
+                        Field locField = line.getClass().getField("location");
+                        locField.setAccessible(true);
+                        Object loc = locField.get(line);
+                        if (loc != null) {
+                            Field boxField = loc.getClass().getField("box");
+                            boxField.setAccessible(true);
+                            float[] box = (float[]) boxField.get(loc);
+                            if (box != null) {
+                                int[] bbox = new int[box.length];
+                                for (int i = 0; i < box.length; i++) bbox[i] = (int) box[i];
+                                block.setBoundingBox(bbox);
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                    result.getTexts().add(block);
+                }
+            }
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": OCR line extract error: " + t.getMessage());
+        }
+    }
+
+    // ==================== NER ====================
 
     public NERResult performNER(String text) {
-        Object svc = getNerService();
-        if (svc != null) {
-            try {
-                Method m = findMethod(svc, "ner", String.class);
-                if (m == null) m = findMethod(svc, "performNER", String.class);
-                if (m == null) m = findMethod(svc, "analyze", String.class);
-                if (m != null) {
-                    Object result = m.invoke(svc, text);
-                    NERResult r = convertNERResult(result);
-                    if (r != null) return r;
-                }
-            } catch (Throwable t) { XposedBridge.log(TAG + ": AIDL NER error: " + t.getMessage()); }
+        if (nerService == null) {
+            XposedBridge.log(TAG + ": NER: nerService is null");
+            return null;
         }
-        if (nerEngine != null) {
-            try {
-                Method m = findMethod(nerEngine, "ner", String.class);
-                if (m == null) m = findMethod(nerEngine, "performNER", String.class);
-                if (m == null) m = findMethod(nerEngine, "analyze", String.class);
-                if (m != null) {
-                    Object result = m.invoke(nerEngine, text);
-                    return convertNERResult(result);
+        try {
+            // extract(String) -> List<Entity>
+            Method extract = findMethod(nerService, "extract", String.class);
+            if (extract == null) {
+                XposedBridge.log(TAG + ": NER: extract method not found");
+                return null;
+            }
+            Object entityList = extract.invoke(nerService, text);
+            if (entityList == null) {
+                XposedBridge.log(TAG + ": NER: extract returned null");
+                return null;
+            }
+
+            NERResult result = new NERResult();
+            result.setStatusCode(0);
+            if (entityList instanceof List) {
+                for (Object entity : (List<?>) entityList) {
+                    Entity e = new Entity();
+                    // Entity fields: str, mType, start, end
+                    try {
+                        Field strField = entity.getClass().getField("str");
+                        strField.setAccessible(true);
+                        e.setText((String) strField.get(entity));
+                        Field typeField = entity.getClass().getField("mType");
+                        typeField.setAccessible(true);
+                        e.setType((int) typeField.get(entity));
+                        Field startField = entity.getClass().getField("start");
+                        startField.setAccessible(true);
+                        e.setStart((int) startField.get(entity));
+                        Field endField = entity.getClass().getField("end");
+                        endField.setAccessible(true);
+                        e.setEnd((int) endField.get(entity));
+                    } catch (Throwable ignored) {}
+                    result.getEntities().add(e);
                 }
-            } catch (Throwable t) { XposedBridge.log(TAG + ": Direct NER error: " + t.getMessage()); }
+            }
+            XposedBridge.log(TAG + ": NER: found " + result.getEntities().size() + " entities");
+            return result;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": NER error: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+            return null;
         }
-        return null;
     }
+
+    // ==================== Tokenize ====================
 
     public TokenizeResult performTokenize(String text) {
-        Object svc = getNerService();
-        if (svc != null) {
-            try {
-                Method m = findMethod(svc, "tokenize", String.class);
-                if (m == null) m = findMethod(svc, "performTokenize", String.class);
-                if (m != null) {
-                    Object result = m.invoke(svc, text);
-                    TokenizeResult r = convertTokenizeResult(result);
-                    if (r != null) return r;
-                }
-            } catch (Throwable t) { XposedBridge.log(TAG + ": AIDL tokenize error: " + t.getMessage()); }
+        if (nerService == null) {
+            XposedBridge.log(TAG + ": Tokenize: nerService is null");
+            return null;
         }
-        if (nerEngine != null) {
-            try {
-                Method m = findMethod(nerEngine, "tokenize", String.class);
-                if (m == null) m = findMethod(nerEngine, "performTokenize", String.class);
-                if (m != null) {
-                    Object result = m.invoke(nerEngine, text);
-                    return convertTokenizeResult(result);
+        try {
+            // cut(String) -> List<String>
+            Method cut = findMethod(nerService, "cut", String.class);
+            if (cut == null) {
+                XposedBridge.log(TAG + ": Tokenize: cut method not found");
+                return null;
+            }
+            Object tokenList = cut.invoke(nerService, text);
+            if (tokenList == null) {
+                XposedBridge.log(TAG + ": Tokenize: cut returned null");
+                return null;
+            }
+
+            TokenizeResult result = new TokenizeResult();
+            result.setStatusCode(0);
+            if (tokenList instanceof List) {
+                for (Object token : (List<?>) tokenList) {
+                    result.getTokens().add(String.valueOf(token));
                 }
-            } catch (Throwable t) { XposedBridge.log(TAG + ": Direct tokenize error: " + t.getMessage()); }
+            }
+            XposedBridge.log(TAG + ": Tokenize: found " + result.getTokens().size() + " tokens");
+            return result;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": Tokenize error: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+            return null;
         }
-        return null;
     }
+
+    // ==================== Segment ====================
 
     public SegmentResult performSegment(Bitmap bitmap, String type) {
-        Object svc = getSegmentService();
-        if (svc != null) {
+        if (segmentService == null) {
+            XposedBridge.log(TAG + ": Segment: segmentService is null");
+            return null;
+        }
+        try {
+            // segment(Bitmap, VisionAttribute) -> SegmentResult
+            // VisionAttribute is optional, pass null
+            Class<?> vaClass = Class.forName("com.xiaomi.aicr.vision.VisionAttribute", false, appClassLoader);
+            Method segment = findMethod(segmentService, "segment", Bitmap.class, vaClass);
+            if (segment == null) {
+                XposedBridge.log(TAG + ": Segment: segment method not found");
+                return null;
+            }
+            Object segResult = segment.invoke(segmentService, bitmap, null);
+            if (segResult == null) {
+                XposedBridge.log(TAG + ": Segment: segment returned null");
+                return null;
+            }
+
+            SegmentResult result = new SegmentResult();
+            // Get bitmaps from result
             try {
-                Method m = findMethod(svc, "segment", Bitmap.class, String.class);
-                if (m == null) m = findMethod(svc, "performSegment", Bitmap.class, String.class);
-                if (m != null) {
-                    Object result = m.invoke(svc, bitmap, type);
-                    SegmentResult r = convertSegmentResult(result);
-                    if (r != null) return r;
-                }
-                m = findMethod(svc, "segment", Bitmap.class);
-                if (m == null) m = findMethod(svc, "performSegment", Bitmap.class);
-                if (m != null) {
-                    Object result = m.invoke(svc, bitmap);
-                    return convertSegmentResult(result);
-                }
-            } catch (Throwable t) { XposedBridge.log(TAG + ": AIDL segment error: " + t.getMessage()); }
-        }
-        if (segmentEngine != null) {
-            try {
-                Method m = findMethod(segmentEngine, "segment", Bitmap.class, String.class);
-                if (m == null) m = findMethod(segmentEngine, "performSegment", Bitmap.class, String.class);
-                if (m != null) {
-                    Object result = m.invoke(segmentEngine, bitmap, type);
-                    return convertSegmentResult(result);
-                }
-                m = findMethod(segmentEngine, "segment", Bitmap.class);
-                if (m == null) m = findMethod(segmentEngine, "performSegment", Bitmap.class);
-                if (m != null) {
-                    Object result = m.invoke(segmentEngine, bitmap);
-                    return convertSegmentResult(result);
-                }
-            } catch (Throwable t) { XposedBridge.log(TAG + ": Direct segment error: " + t.getMessage()); }
-        }
-        return null;
-    }
-
-    // ---- Service Proxy Getters ----
-
-    public Object getVisionService() {
-        if (visionService == null && coreServiceBinder != null && appClassLoader != null) {
-            synchronized (this) { if (visionService == null) visionService = tryCreateProxy(VISION_STUB_NAMES, coreServiceBinder, appClassLoader); }
-        }
-        return visionService;
-    }
-
-    public Object getNerService() {
-        if (nerService == null && coreServiceBinder != null && appClassLoader != null) {
-            synchronized (this) { if (nerService == null) nerService = tryCreateProxy(NER_STUB_NAMES, coreServiceBinder, appClassLoader); }
-        }
-        return nerService;
-    }
-
-    public Object getSegmentService() {
-        if (segmentService == null && coreServiceBinder != null && appClassLoader != null) {
-            synchronized (this) { if (segmentService == null) segmentService = tryCreateProxy(SEGMENT_STUB_NAMES, coreServiceBinder, appClassLoader); }
-        }
-        return segmentService;
-    }
-
-    // ---- Result Converters ----
-
-    private OCRResult convertOCRResult(Object result) {
-        if (result == null) return null;
-        try {
-            OCRResult r = new OCRResult();
-            Method m = findMethod(result, "getStatusCode"); if (m != null) r.setStatusCode((int) m.invoke(result));
-            m = findMethod(result, "getTexts"); if (m == null) m = findMethod(result, "getTextBlocks");
-            if (m != null) {
-                Object textList = m.invoke(result);
-                if (textList instanceof List) {
-                    List<TextBlock> blocks = new ArrayList<>();
-                    for (Object item : (List<?>) textList) {
-                        TextBlock block = new TextBlock();
-                        Method gm = findMethod(item, "getContent"); if (gm == null) gm = findMethod(item, "getText");
-                        if (gm != null) block.setContent((String) gm.invoke(item));
-                        gm = findMethod(item, "getBoundingBox");
-                        if (gm != null) { Object bbox = gm.invoke(item); if (bbox instanceof int[]) block.setBoundingBox((int[]) bbox); }
-                        blocks.add(block);
+                Method getBitmaps = findMethod(segResult, "getBitmaps");
+                if (getBitmaps != null) {
+                    Object bitmaps = getBitmaps.invoke(segResult);
+                    if (bitmaps instanceof List) {
+                        for (Object bmp : (List<?>) bitmaps) {
+                            Segment s = new Segment();
+                            s.setType(type != null ? type : "foreground");
+                            if (bmp instanceof Bitmap) s.setMask((Bitmap) bmp);
+                            result.getSegments().add(s);
+                        }
                     }
-                    r.setTexts(blocks);
                 }
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + ": Segment convert error: " + t.getMessage());
             }
-            return r;
-        } catch (Throwable e) { return null; }
+            XposedBridge.log(TAG + ": Segment: found " + result.getSegments().size() + " segments");
+            return result;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": Segment error: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+            return null;
+        }
     }
 
-    private NERResult convertNERResult(Object result) {
-        if (result == null) return null;
-        try {
-            NERResult r = new NERResult();
-            Method m = findMethod(result, "getStatusCode"); if (m != null) r.setStatusCode((int) m.invoke(result));
-            m = findMethod(result, "getEntities");
-            if (m != null) {
-                Object entityList = m.invoke(result);
-                if (entityList instanceof List) {
-                    List<Entity> entities = new ArrayList<>();
-                    for (Object item : (List<?>) entityList) {
-                        Entity e = new Entity();
-                        Method gm = findMethod(item, "getText"); if (gm == null) gm = findMethod(item, "getStr");
-                        if (gm != null) e.setText((String) gm.invoke(item));
-                        gm = findMethod(item, "getType"); if (gm != null) e.setType((int) gm.invoke(item));
-                        gm = findMethod(item, "getStart"); if (gm != null) e.setStart((int) gm.invoke(item));
-                        gm = findMethod(item, "getEnd"); if (gm != null) e.setEnd((int) gm.invoke(item));
-                        entities.add(e);
-                    }
-                    r.setEntities(entities);
-                }
-            }
-            return r;
-        } catch (Throwable e) { return null; }
-    }
-
-    private TokenizeResult convertTokenizeResult(Object result) {
-        if (result == null) return null;
-        try {
-            TokenizeResult r = new TokenizeResult();
-            Method m = findMethod(result, "getStatusCode"); if (m != null) r.setStatusCode((int) m.invoke(result));
-            m = findMethod(result, "getTokens");
-            if (m != null) {
-                Object tokenList = m.invoke(result);
-                if (tokenList instanceof List) {
-                    List<String> tokens = new ArrayList<>();
-                    for (Object item : (List<?>) tokenList) tokens.add(String.valueOf(item));
-                    r.setTokens(tokens);
-                }
-            }
-            return r;
-        } catch (Throwable e) { return null; }
-    }
-
-    private SegmentResult convertSegmentResult(Object result) {
-        if (result == null) return null;
-        try {
-            SegmentResult r = new SegmentResult();
-            Method m = findMethod(result, "getSegments");
-            if (m != null) {
-                Object segList = m.invoke(result);
-                if (segList instanceof List) {
-                    List<Segment> segments = new ArrayList<>();
-                    for (Object item : (List<?>) segList) {
-                        Segment s = new Segment();
-                        Method gm = findMethod(item, "getType"); if (gm != null) s.setType((String) gm.invoke(item));
-                        gm = findMethod(item, "getMask"); if (gm != null) { Object mask = gm.invoke(item); if (mask instanceof Bitmap) s.setMask((Bitmap) mask); }
-                        gm = findMethod(item, "getWidth"); if (gm != null) s.setWidth((int) gm.invoke(item));
-                        gm = findMethod(item, "getHeight"); if (gm != null) s.setHeight((int) gm.invoke(item));
-                        segments.add(s);
-                    }
-                    r.setSegments(segments);
-                }
-            }
-            return r;
-        } catch (Throwable e) { return null; }
-    }
-
-    // ---- Data Classes ----
+    // ==================== Data Classes ====================
 
     public static class TextBlock {
         private String content; private int[] boundingBox;
