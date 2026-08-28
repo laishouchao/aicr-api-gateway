@@ -24,10 +24,12 @@ jobs:
 
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: '8.0'
 
     - name: Generate Gradle Wrapper
       run: |
-        gradle wrapper --gradle-version 8.0
+        gradle wrapper
         chmod +x gradlew
 
     - name: Build Debug APK
@@ -68,10 +70,12 @@ jobs:
 
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: '8.0'
 
     - name: Generate Gradle Wrapper
       run: |
-        gradle wrapper --gradle-version 8.0
+        gradle wrapper
         chmod +x gradlew
 
     - name: Build Release APK
