@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- LSPosed module scope: packages that this module will be injected into -->
+    <string-array name="xposedscope">
+        <item>com.xiaomi.aicr</item>
+    </string-array>
+</resources>
